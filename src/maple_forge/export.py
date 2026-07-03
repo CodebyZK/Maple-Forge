@@ -7,10 +7,13 @@ import hashlib
 import heapq
 import json
 import logging
+import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pandas as pd
 import pyarrow as pa
@@ -19,7 +22,7 @@ import pyarrow.parquet as pq
 from maple_forge import config
 from maple_forge.clean import clean_chunk
 from maple_forge.io import write_json_atomic
-from maple_forge.validate import RejectedRecord, validate_records
+from maple_forge.validate import RejectedRecord, ValidationResult, validate_records
 
 LOGGER = logging.getLogger(__name__)
 
@@ -123,16 +126,74 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _manifest_artifact(path: Path, row_count: int) -> dict[str, Any]:
+def _manifest_artifact(
+    staged_path: Path,
+    published_path: Path,
+    row_count: int,
+) -> dict[str, Any]:
     try:
-        display_path = path.resolve().relative_to(config.PROJECT_ROOT.resolve())
+        display_path = published_path.resolve().relative_to(
+            config.PROJECT_ROOT.resolve()
+        )
     except ValueError:
-        display_path = Path(path.name)
+        display_path = Path(published_path.name)
     return {
         "path": display_path.as_posix(),
         "row_count": row_count,
-        "sha256": _sha256(path),
+        "sha256": _sha256(staged_path),
     }
+
+
+def _iter_validated_chunks(
+    input_csv: Path,
+    *,
+    source_url: str,
+    retrieved_at: str,
+    chunk_size: int,
+) -> Iterator[ValidationResult]:
+    """Yield cleaned and validated chunks from a source CSV."""
+    chunks = pd.read_csv(
+        input_csv,
+        chunksize=chunk_size,
+        dtype=str,
+        encoding="utf-8-sig",
+        keep_default_na=False,
+        na_values=[""],
+    )
+    for frame in chunks:
+        yield validate_records(
+            clean_chunk(
+                frame,
+                source_url=source_url,
+                retrieved_at=retrieved_at,
+            )
+        )
+
+
+def _publish_files(staged_files: list[tuple[Path, Path]]) -> None:
+    """Publish a group of files and restore prior outputs if a rename fails."""
+    backup_suffix = f".backup-{uuid4().hex}"
+    backups: dict[Path, Path] = {}
+    published: list[Path] = []
+    try:
+        for _, target in staged_files:
+            if target.exists():
+                backup = target.with_name(target.name + backup_suffix)
+                target.replace(backup)
+                backups[target] = backup
+        for staged, target in staged_files:
+            staged.replace(target)
+            published.append(target)
+    except Exception:
+        for target in published:
+            target.unlink(missing_ok=True)
+        for target, backup in backups.items():
+            if backup.exists():
+                backup.replace(target)
+        raise
+    else:
+        for backup in backups.values():
+            backup.unlink(missing_ok=True)
 
 
 def export_sample(
@@ -164,22 +225,13 @@ def export_sample(
     LOGGER.info("Processing %s in chunks of %s rows", input_csv, f"{chunk_size:,}")
     try:
         with rejected_temporary.open("w", encoding="utf-8", newline="\n") as rejected:
-            chunks = pd.read_csv(
+            chunks = _iter_validated_chunks(
                 input_csv,
-                chunksize=chunk_size,
-                dtype=str,
-                encoding="utf-8-sig",
-                keep_default_na=False,
-                na_values=[""],
+                source_url=source_url,
+                retrieved_at=retrieved_at,
+                chunk_size=chunk_size,
             )
-            for frame in chunks:
-                validation = validate_records(
-                    clean_chunk(
-                        frame,
-                        source_url=source_url,
-                        retrieved_at=retrieved_at,
-                    )
-                )
+            for validation in chunks:
                 for item in validation.rejected:
                     _write_rejected(rejected, item)
                     rejected_count += 1
@@ -231,48 +283,55 @@ def build_dataset(
         path.parent.mkdir(parents=True, exist_ok=True)
 
     parquet_temporary = parquet_path.with_suffix(f"{parquet_path.suffix}.part")
+    sample_temporary = sample_path.with_suffix(f"{sample_path.suffix}.staged")
     rejected_temporary = rejected_path.with_suffix(f"{rejected_path.suffix}.part")
+    manifest_temporary = manifest_path.with_suffix(f"{manifest_path.suffix}.staged")
+    dedup_path = parquet_path.with_suffix(f"{parquet_path.suffix}.dedup.sqlite")
     sample_heap: list[tuple[int, str, dict[str, Any]]] = []
-    accepted_ids: set[str] = set()
     accepted_count = 0
     duplicate_count = 0
     rejected_count = 0
     writer: pq.ParquetWriter | None = None
+    dedup: sqlite3.Connection | None = None
+    processing_complete = False
 
     LOGGER.info("Building full dataset from %s", input_csv)
     try:
+        dedup_path.unlink(missing_ok=True)
+        dedup = sqlite3.connect(dedup_path)
+        dedup.execute("PRAGMA journal_mode=OFF")
+        dedup.execute("PRAGMA synchronous=OFF")
+        dedup.execute(
+            "CREATE TABLE accepted_ids "
+            "(record_id TEXT PRIMARY KEY) WITHOUT ROWID"
+        )
         writer = pq.ParquetWriter(parquet_temporary, PARQUET_SCHEMA)
         with rejected_temporary.open("w", encoding="utf-8", newline="\n") as rejected:
-            chunks = pd.read_csv(
+            chunks = _iter_validated_chunks(
                 input_csv,
-                chunksize=chunk_size,
-                dtype=str,
-                encoding="utf-8-sig",
-                keep_default_na=False,
-                na_values=[""],
+                source_url=source_url,
+                retrieved_at=retrieved_at,
+                chunk_size=chunk_size,
             )
-            for chunk_number, frame in enumerate(chunks, start=1):
-                validation = validate_records(
-                    clean_chunk(
-                        frame,
-                        source_url=source_url,
-                        retrieved_at=retrieved_at,
-                    )
-                )
+            for chunk_number, validation in enumerate(chunks, start=1):
                 for item in validation.rejected:
                     _write_rejected(rejected, item)
                     rejected_count += 1
 
                 unique_records: list[dict[str, Any]] = []
-                for record in validation.accepted:
-                    record_id = str(record["record_id"])
-                    if record_id in accepted_ids:
-                        duplicate_count += 1
-                        continue
-                    accepted_ids.add(record_id)
-                    unique_records.append(record)
-                    accepted_count += 1
-                    _add_to_sample(sample_heap, record, sample_size)
+                with dedup:
+                    for record in validation.accepted:
+                        record_id = str(record["record_id"])
+                        cursor = dedup.execute(
+                            "INSERT OR IGNORE INTO accepted_ids VALUES (?)",
+                            (record_id,),
+                        )
+                        if cursor.rowcount == 0:
+                            duplicate_count += 1
+                            continue
+                        unique_records.append(record)
+                        accepted_count += 1
+                        _add_to_sample(sample_heap, record, sample_size)
 
                 if unique_records:
                     writer.write_table(
@@ -290,16 +349,19 @@ def build_dataset(
                     )
         writer.close()
         writer = None
-        parquet_temporary.replace(parquet_path)
-        rejected_temporary.replace(rejected_path)
+        processing_complete = True
     finally:
         if writer is not None:
             writer.close()
-        parquet_temporary.unlink(missing_ok=True)
-        rejected_temporary.unlink(missing_ok=True)
+        if dedup is not None:
+            dedup.close()
+        dedup_path.unlink(missing_ok=True)
+        if not processing_complete:
+            parquet_temporary.unlink(missing_ok=True)
+            rejected_temporary.unlink(missing_ok=True)
 
     sample = _sample_records(sample_heap)
-    write_json_atomic(sample_path, sample, ensure_ascii=False)
+    write_json_atomic(sample_temporary, sample, ensure_ascii=False)
     manifest = {
         "schema_version": config.SCHEMA_VERSION,
         "source": {
@@ -314,12 +376,35 @@ def build_dataset(
             "sample": len(sample),
         },
         "artifacts": {
-            "parquet": _manifest_artifact(parquet_path, accepted_count),
-            "sample": _manifest_artifact(sample_path, len(sample)),
-            "rejections": _manifest_artifact(rejected_path, rejected_count),
+            "parquet": _manifest_artifact(
+                parquet_temporary, parquet_path, accepted_count
+            ),
+            "sample": _manifest_artifact(sample_temporary, sample_path, len(sample)),
+            "rejections": _manifest_artifact(
+                rejected_temporary, rejected_path, rejected_count
+            ),
         },
     }
-    write_json_atomic(manifest_path, manifest, ensure_ascii=False, sort_keys=True)
+    write_json_atomic(
+        manifest_temporary,
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    try:
+        _publish_files(
+            [
+                (parquet_temporary, parquet_path),
+                (sample_temporary, sample_path),
+                (rejected_temporary, rejected_path),
+                (manifest_temporary, manifest_path),
+            ]
+        )
+    finally:
+        parquet_temporary.unlink(missing_ok=True)
+        sample_temporary.unlink(missing_ok=True)
+        rejected_temporary.unlink(missing_ok=True)
+        manifest_temporary.unlink(missing_ok=True)
 
     LOGGER.info(
         "Built %s records, %s sample records, and %s rejection reports",

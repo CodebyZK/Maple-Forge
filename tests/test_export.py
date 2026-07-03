@@ -5,8 +5,10 @@ from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
-from maple_forge.export import build_dataset, export_sample
+from maple_forge import config
+from maple_forge.export import _publish_files, build_dataset, export_sample
 
 CSV_TEXT = """ref_number,amendment_number,recipient_legal_name,agreement_title_en,agreement_value,agreement_start_date,agreement_end_date,recipient_province,recipient_city,prog_name_en,description_en,owner_org,owner_org_title
 001-2025-2026-Q1-00001,0,NA,Alpha Project,1000,2025-04-01,2026-03-31,ON,Ottawa,Program A,Alpha purpose,dept-a,Department A
@@ -121,7 +123,7 @@ def test_build_dataset_writes_all_artifacts_and_manifest(tmp_path: Path) -> None
     assert parquet_schema.field("retrieved_at").type == pa.timestamp("ms", tz="UTC")
     assert len(sample) == 2
     assert len(rejected) == 1
-    assert manifest["schema_version"] == "1.0.0"
+    assert manifest["schema_version"] == config.SCHEMA_VERSION
     assert manifest["source"]["source_url"] == "https://example.test/grants.csv"
     assert manifest["counts"] == {
         "accepted": 3,
@@ -139,3 +141,72 @@ def test_build_dataset_writes_all_artifacts_and_manifest(tmp_path: Path) -> None
     assert manifest["artifacts"]["rejections"]["sha256"] == hashlib.sha256(
         rejected_path.read_bytes()
     ).hexdigest()
+
+
+def test_build_dataset_handles_many_unique_records_in_chunks(tmp_path: Path) -> None:
+    row_count = 2_500
+    input_csv = tmp_path / "grants.csv"
+    metadata_path = tmp_path / "grants.metadata.json"
+    header = CSV_TEXT.splitlines()[0]
+    rows = [
+        f"{index},0,Recipient {index},Project {index},1000,,,,,,Purpose,dept,Dept"
+        for index in range(row_count)
+    ]
+    input_csv.write_text("\n".join([header, *rows]), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "source_url": "https://example.test/grants.csv",
+                "retrieved_at": "2026-07-02T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_dataset(
+        input_csv,
+        metadata_path,
+        tmp_path / "grants.parquet",
+        tmp_path / "grants.sample.json",
+        tmp_path / "grants.rejected.jsonl",
+        tmp_path / "grants.manifest.json",
+        sample_size=10,
+        chunk_size=100,
+    )
+
+    assert summary.accepted_count == row_count
+    assert pq.read_metadata(summary.parquet_path).num_rows == row_count
+    assert not list(tmp_path.glob("*.dedup.sqlite"))
+
+
+def test_publish_files_restores_existing_outputs_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_staged = tmp_path / "first.staged"
+    second_staged = tmp_path / "second.staged"
+    first_target = tmp_path / "first.json"
+    second_target = tmp_path / "second.json"
+    first_staged.write_text("new first", encoding="utf-8")
+    second_staged.write_text("new second", encoding="utf-8")
+    first_target.write_text("old first", encoding="utf-8")
+    second_target.write_text("old second", encoding="utf-8")
+    original_replace = Path.replace
+
+    def fail_second_publish(source: Path, target: Path) -> Path:
+        if source == second_staged:
+            raise OSError("simulated publish failure")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_publish)
+
+    with pytest.raises(OSError, match="simulated publish failure"):
+        _publish_files(
+            [
+                (first_staged, first_target),
+                (second_staged, second_target),
+            ]
+        )
+
+    assert first_target.read_text(encoding="utf-8") == "old first"
+    assert second_target.read_text(encoding="utf-8") == "old second"

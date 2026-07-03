@@ -128,8 +128,8 @@ validation rules.
   Canadian name or postal abbreviation.
 - Repeated source identities are treated as duplicates. Conflicting rows with
   the same reference and amendment identifier retain the first occurrence.
-- Exact cross-chunk deduplication keeps accepted record IDs in memory. If the
-  source grows substantially, this index should move to bounded on-disk storage.
+- Exact cross-chunk deduplication uses a temporary on-disk SQLite index so the
+  complete export does not retain every accepted record ID in memory.
 - The committed sample is for development and demonstration, not statistical
   analysis.
 
