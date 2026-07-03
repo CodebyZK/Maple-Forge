@@ -1,0 +1,36 @@
+image: python:3.12-slim
+
+stages:
+  - test
+  - build
+
+default:
+  cache:
+    key: "${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cache/pip
+  before_script:
+    - python -m pip install --cache-dir .cache/pip -e ".[dev]"
+
+test:
+  stage: test
+  script:
+    - pytest
+
+sample-artifact:
+  stage: build
+  script:
+    - mkdir -p build
+    - >-
+      maple-forge-export-sample
+      --input tests/fixtures/grants.csv
+      --metadata tests/fixtures/grants.metadata.json
+      --output build/grants.sample.json
+      --rejected build/grants.rejected.jsonl
+      --sample-size 3
+      --chunk-size 2
+  artifacts:
+    paths:
+      - build/grants.sample.json
+      - build/grants.rejected.jsonl
+    expire_in: 30 days
