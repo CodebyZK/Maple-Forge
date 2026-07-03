@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -67,7 +68,6 @@ def _build_retry_session() -> requests.Session:
     )
     adapter = HTTPAdapter(max_retries=retry)
     session = requests.Session()
-    session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
 
@@ -81,6 +81,8 @@ def download_grants(
 ) -> dict[str, Any]:
     """Stream the grants CSV to disk and persist retrieval metadata."""
     resolved_url = resolve_source_url(source_url)
+    if urlparse(resolved_url).scheme.lower() != "https":
+        raise ValueError("grants source URL must use HTTPS")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = destination.with_suffix(f"{destination.suffix}.part")
     digest = hashlib.sha256()

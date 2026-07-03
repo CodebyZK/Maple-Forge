@@ -87,7 +87,7 @@ Every command also supports `--help` and explicit path arguments.
 
 PowerShell, bash, or zsh:
 
-```powershell
+```console
 pytest
 ```
 
