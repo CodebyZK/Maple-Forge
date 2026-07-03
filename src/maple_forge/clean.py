@@ -83,6 +83,7 @@ def _date_column(frame: pd.DataFrame, name: str) -> pd.Series:
         format="mixed",
     )
     formatted = parsed.dt.strftime("%Y-%m-%d")
+    # dt.strftime can expose NaT as "NaT"; also reject malformed/out-of-bounds dates.
     return formatted.where(formatted.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False))
 
 
