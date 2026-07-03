@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maple-forge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Clean Canadian federal grants and contributions data for MapleScope."
 requires-python = ">=3.12"
 dependencies = [
     "pandas>=2.2.0",
+    "pyarrow>=16.0.0",
     "requests>=2.32.0"
 ]
 
@@ -21,7 +22,9 @@ dev = [
 [project.scripts]
 maple-forge-download = "maple_forge.download:main"
 maple-forge-export-sample = "maple_forge.export:main"
+maple-forge-build = "maple_forge.export:main_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-p no:cacheprovider"

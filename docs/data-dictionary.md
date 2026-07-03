@@ -46,3 +46,16 @@ line contains:
 ```
 
 The `record` object contains the complete attempted canonical mapping.
+
+## Published artifacts
+
+`data/processed/grants.parquet` contains one row per accepted unique record.
+Agreement dates use native Parquet `date32` columns, `retrieved_at` uses a UTC
+timestamp column, and `agreement_value` uses a double column. Other canonical
+fields use string columns.
+
+`data/processed/grants.manifest.json` identifies schema version `1.0.0`, copies
+the available source URL, retrieval time, byte count, and source checksum from
+download metadata, and reports accepted, duplicate, rejected, and sample row
+counts. It also records the path, row count, and SHA-256 checksum for each
+generated artifact.

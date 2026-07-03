@@ -17,20 +17,24 @@ test:
   script:
     - pytest
 
-sample-artifact:
+dataset-artifacts:
   stage: build
   script:
     - mkdir -p build
     - >-
-      maple-forge-export-sample
+      maple-forge-build
       --input tests/fixtures/grants.csv
       --metadata tests/fixtures/grants.metadata.json
-      --output build/grants.sample.json
+      --parquet build/grants.parquet
+      --sample build/grants.sample.json
       --rejected build/grants.rejected.jsonl
+      --manifest build/grants.manifest.json
       --sample-size 3
       --chunk-size 2
   artifacts:
     paths:
+      - build/grants.parquet
       - build/grants.sample.json
       - build/grants.rejected.jsonl
+      - build/grants.manifest.json
     expire_in: 30 days

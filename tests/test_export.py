@@ -1,7 +1,12 @@
+import hashlib
 import json
 from pathlib import Path
 
-from maple_forge.export import export_sample
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from maple_forge.export import build_dataset, export_sample
 
 CSV_TEXT = """ref_number,amendment_number,recipient_legal_name,agreement_title_en,agreement_value,agreement_start_date,agreement_end_date,recipient_province,recipient_city,prog_name_en,description_en,owner_org,owner_org_title
 001-2025-2026-Q1-00001,0,NA,Alpha Project,1000,2025-04-01,2026-03-31,ON,Ottawa,Program A,Alpha purpose,dept-a,Department A
@@ -63,3 +68,74 @@ def test_export_sample_is_deterministic_and_reports_rejections(
     )
     assert any(record["recipient_name"] == "NA" for record in records)
     assert rejected[0]["errors"] == ["recipient_name is required"]
+
+
+def test_build_dataset_writes_all_artifacts_and_manifest(tmp_path: Path) -> None:
+    input_csv = tmp_path / "grants.csv"
+    metadata_path = tmp_path / "grants.metadata.json"
+    parquet_path = tmp_path / "grants.parquet"
+    sample_path = tmp_path / "grants.sample.json"
+    rejected_path = tmp_path / "grants.rejected.jsonl"
+    manifest_path = tmp_path / "grants.manifest.json"
+    input_csv.write_text(CSV_TEXT, encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "byte_count": len(CSV_TEXT.encode("utf-8")),
+                "source_url": "https://example.test/grants.csv",
+                "retrieved_at": "2026-07-02T12:00:00Z",
+                "sha256": "source-checksum",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_dataset(
+        input_csv,
+        metadata_path,
+        parquet_path,
+        sample_path,
+        rejected_path,
+        manifest_path,
+        sample_size=2,
+        chunk_size=2,
+    )
+
+    records = pd.read_parquet(parquet_path).to_dict(orient="records")
+    parquet_schema = pq.read_schema(parquet_path)
+    sample = json.loads(sample_path.read_text(encoding="utf-8"))
+    rejected = rejected_path.read_text(encoding="utf-8").splitlines()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert summary.accepted_count == 3
+    assert summary.duplicate_count == 1
+    assert summary.rejected_count == 1
+    assert summary.sample_count == 2
+    assert len(records) == 3
+    assert {record["recipient_name"] for record in records} == {
+        "NA",
+        "Beta Society",
+        "Gamma Society",
+    }
+    assert parquet_schema.field("agreement_start_date").type == pa.date32()
+    assert parquet_schema.field("retrieved_at").type == pa.timestamp("ms", tz="UTC")
+    assert len(sample) == 2
+    assert len(rejected) == 1
+    assert manifest["schema_version"] == "1.0.0"
+    assert manifest["source"]["source_url"] == "https://example.test/grants.csv"
+    assert manifest["counts"] == {
+        "accepted": 3,
+        "duplicates": 1,
+        "rejected": 1,
+        "sample": 2,
+    }
+    assert manifest["artifacts"]["parquet"]["row_count"] == 3
+    assert manifest["artifacts"]["parquet"]["sha256"] == hashlib.sha256(
+        parquet_path.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts"]["sample"]["sha256"] == hashlib.sha256(
+        sample_path.read_bytes()
+    ).hexdigest()
+    assert manifest["artifacts"]["rejections"]["sha256"] == hashlib.sha256(
+        rejected_path.read_bytes()
+    ).hexdigest()

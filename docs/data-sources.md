@@ -25,8 +25,10 @@ The URL and timestamp are copied into every canonical record.
 
 The exporter reads the CSV in chunks. It normalizes source labels, maps the
 documented fields, validates each canonical record, writes rejected rows to a
-JSON Lines report, removes repeated source identities, and selects a
-deterministic sample.
+JSON Lines report, and removes repeated source identities. A single build writes
+every accepted record to `data/processed/grants.parquet`, selects the
+deterministic JSON sample, and records lineage, counts, and artifact checksums
+in `data/processed/grants.manifest.json`.
 
 Raw and processed files are intentionally ignored by Git because the complete
 source is large and is republished regularly.

@@ -12,10 +12,13 @@ SAMPLES_DIR = DATA_DIR / "samples"
 RAW_GRANTS_CSV = RAW_DIR / "grants.csv"
 RAW_METADATA_JSON = RAW_DIR / "grants.metadata.json"
 SAMPLE_JSON = SAMPLES_DIR / "grants.sample.json"
+PROCESSED_GRANTS_PARQUET = PROCESSED_DIR / "grants.parquet"
 REJECTED_JSONL = PROCESSED_DIR / "grants.rejected.jsonl"
+MANIFEST_JSON = PROCESSED_DIR / "grants.manifest.json"
 
 SAMPLE_SIZE = 500
 CSV_CHUNK_SIZE = 10_000
+SCHEMA_VERSION = "1.0.0"
 
 GRANTS_CSV_URL_ENV_VAR = "MAPLE_FORGE_GRANTS_CSV_URL"
 
