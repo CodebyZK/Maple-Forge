@@ -1,3 +1,5 @@
+import hashlib
+
 import pandas as pd
 
 from maple_forge.clean import (
@@ -22,8 +24,8 @@ def test_parse_money_and_date_are_safe() -> None:
 
 def test_clean_chunk_maps_schema() -> None:
     source = {
-        "Reference Number": "001-2025-2026-Q1-00001",
-        "Amendment Number": "0",
+        "ref_number": "001-2025-2026-Q1-00001",
+        "amendment_number": "0",
         "Recipient Legal Name": "  Example   Society ",
         "Agreement Title En": "A useful project",
         "Agreement Value": "$25,000.00",
@@ -46,7 +48,9 @@ def test_clean_chunk_maps_schema() -> None:
 
     assert len(records) == 2
     record = records[0]
-    assert record["record_id"].startswith("grant_")
+    identity = "goc-grants:001-2025-2026-Q1-00001:0"
+    expected_id = f"grant_{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+    assert record["record_id"] == expected_id
     assert record["recipient_name"] == "Example Society"
     assert record["agreement_value"] == 25_000.0
     assert record["agreement_end_date"] is None

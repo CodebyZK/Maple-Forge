@@ -21,9 +21,19 @@ and reads the CSV in chunks rather than loading the full file into memory.
 
 Python 3.12 or newer is required.
 
+PowerShell:
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
+Bash or zsh:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -31,16 +41,22 @@ pip install -e ".[dev]"
 
 Download the official CSV and write retrieval metadata:
 
+PowerShell:
+
 ```powershell
 maple-forge-download
-```
-
-Clean and validate the downloaded data, report rejected records, and export the
-deterministic 500-record sample:
-
-```powershell
 maple-forge-export-sample
 ```
+
+Bash or zsh:
+
+```bash
+maple-forge-download
+maple-forge-export-sample
+```
+
+The export command cleans and validates the downloaded data, reports rejected
+records, and writes the deterministic 500-record sample.
 
 The commands create these ignored working files and committed output:
 
@@ -51,14 +67,25 @@ The commands create these ignored working files and committed output:
 
 Override the resource URL when necessary:
 
+PowerShell:
+
 ```powershell
 $env:MAPLE_FORGE_GRANTS_CSV_URL = "https://example.gc.ca/grants.csv"
+maple-forge-download
+```
+
+Bash or zsh:
+
+```bash
+export MAPLE_FORGE_GRANTS_CSV_URL="https://example.gc.ca/grants.csv"
 maple-forge-download
 ```
 
 Every command also supports `--help` and explicit path arguments.
 
 ## Tests
+
+PowerShell, bash, or zsh:
 
 ```powershell
 pytest
@@ -95,6 +122,8 @@ validation rules.
   Canadian name or postal abbreviation.
 - Repeated source identities are treated as duplicates. Conflicting rows with
   the same reference and amendment identifier retain the first occurrence.
+- Exact cross-chunk deduplication keeps accepted record IDs in memory. If the
+  source grows substantially, this index should move to bounded on-disk storage.
 - The committed sample is for development and demonstration, not statistical
   analysis.
 

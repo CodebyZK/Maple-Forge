@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from maple_forge.download import download_grants, resolve_source_url
+from maple_forge import config
+from maple_forge.download import (
+    RETRYABLE_STATUS_CODES,
+    _build_retry_session,
+    download_grants,
+    resolve_source_url,
+)
 
 
 class FakeResponse:
@@ -36,6 +42,19 @@ def test_resolve_source_url_prefers_explicit_then_environment(
         "explicit.csv"
     )
     assert resolve_source_url() == "https://example.test/env.csv"
+    monkeypatch.delenv(config.GRANTS_CSV_URL_ENV_VAR)
+    assert resolve_source_url() == config.DEFAULT_GRANTS_CSV_URL
+
+
+def test_retry_session_retries_temporary_failures() -> None:
+    session = _build_retry_session()
+    try:
+        retry = session.get_adapter("https://").max_retries
+        assert retry.total == 3
+        assert set(retry.status_forcelist) == set(RETRYABLE_STATUS_CODES)
+        assert retry.allowed_methods == frozenset({"GET"})
+    finally:
+        session.close()
 
 
 def test_download_grants_streams_file_and_writes_metadata(tmp_path: Path) -> None:

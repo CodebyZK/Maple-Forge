@@ -14,6 +14,7 @@ import pandas as pd
 
 from maple_forge import config
 from maple_forge.clean import clean_chunk
+from maple_forge.io import write_json_atomic
 from maple_forge.validate import RejectedRecord, validate_records
 
 LOGGER = logging.getLogger(__name__)
@@ -37,19 +38,6 @@ def _load_metadata(path: Path) -> dict[str, Any]:
         if not metadata.get(required):
             raise ValueError(f"metadata is missing required field: {required}")
     return metadata
-
-
-def _write_json_atomic(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(f"{path.suffix}.part")
-    try:
-        temporary_path.write_text(
-            json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
 
 
 def _write_rejected(output: Any, rejected: RejectedRecord) -> None:
@@ -81,7 +69,9 @@ def export_sample(
     # The max-heap retains the records with the lexicographically smallest IDs.
     # IDs are hashes, so this is deterministic without depending on source order.
     sample_heap: list[tuple[int, str, dict[str, Any]]] = []
-    selected_ids: set[str] = set()
+    # Exact cross-chunk deduplication requires one long-lived ID per accepted
+    # record. This grows linearly; move it to an on-disk index if future source
+    # growth makes the memory cost material.
     accepted_ids: set[str] = set()
     accepted_count = 0
     duplicate_count = 0
@@ -95,7 +85,8 @@ def export_sample(
                 chunksize=chunk_size,
                 dtype=str,
                 encoding="utf-8-sig",
-                keep_default_na=True,
+                keep_default_na=False,
+                na_values=[""],
             )
             for chunk_number, frame in enumerate(chunks, start=1):
                 records = clean_chunk(
@@ -120,11 +111,8 @@ def export_sample(
                     heap_item = (-numeric_key, record_id, record)
                     if len(sample_heap) < sample_size:
                         heapq.heappush(sample_heap, heap_item)
-                        selected_ids.add(record_id)
                     elif numeric_key < -sample_heap[0][0]:
-                        removed = heapq.heapreplace(sample_heap, heap_item)
-                        selected_ids.remove(removed[1])
-                        selected_ids.add(record_id)
+                        heapq.heapreplace(sample_heap, heap_item)
 
                 if chunk_number % 10 == 0:
                     LOGGER.info(
@@ -139,7 +127,7 @@ def export_sample(
 
     sample = [item[2] for item in sample_heap]
     sample.sort(key=lambda record: str(record["record_id"]))
-    _write_json_atomic(output_path, sample)
+    write_json_atomic(output_path, sample, ensure_ascii=False)
 
     LOGGER.info(
         "Wrote %s sample records; %s rejected rows reported in %s",

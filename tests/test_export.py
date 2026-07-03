@@ -4,7 +4,7 @@ from pathlib import Path
 from maple_forge.export import export_sample
 
 CSV_TEXT = """ref_number,amendment_number,recipient_legal_name,agreement_title_en,agreement_value,agreement_start_date,agreement_end_date,recipient_province,recipient_city,prog_name_en,description_en,owner_org,owner_org_title
-001-2025-2026-Q1-00001,0,Alpha Society,Alpha Project,1000,2025-04-01,2026-03-31,ON,Ottawa,Program A,Alpha purpose,dept-a,Department A
+001-2025-2026-Q1-00001,0,NA,Alpha Project,1000,2025-04-01,2026-03-31,ON,Ottawa,Program A,Alpha purpose,dept-a,Department A
 001-2025-2026-Q1-00002,0,Beta Society,Beta Project,2000,2025-05-01,,Quebec,Montreal,Program B,Beta purpose,dept-b,Department B
 001-2025-2026-Q1-00003,0,Gamma Society,Gamma Project,3000,,,British Columbia,Vancouver,,Gamma purpose,dept-c,Department C
 001-2025-2026-Q1-00003,0,Gamma Society,Gamma Project,3000,,,British Columbia,Vancouver,,Gamma purpose,dept-c,Department C
@@ -61,4 +61,5 @@ def test_export_sample_is_deterministic_and_reports_rejections(
     assert [record["record_id"] for record in records] == sorted(
         record["record_id"] for record in records
     )
+    assert any(record["recipient_name"] == "NA" for record in records)
     assert rejected[0]["errors"] == ["recipient_name is required"]

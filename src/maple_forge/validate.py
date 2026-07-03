@@ -69,9 +69,11 @@ def validate_record(record: Mapping[str, Any]) -> tuple[str, ...]:
     ):
         errors.append("agreement_value must be a finite number")
 
-    for field in ("agreement_start_date", "agreement_end_date"):
-        if not _is_iso_date(record.get(field)):
-            errors.append(f"{field} must be an ISO 8601 date or null")
+    errors.extend(
+        f"{field} must be an ISO 8601 date or null"
+        for field in ("agreement_start_date", "agreement_end_date")
+        if not _is_iso_date(record.get(field))
+    )
 
     if record.get("retrieved_at") is not None and not _is_utc_datetime(
         record.get("retrieved_at")
