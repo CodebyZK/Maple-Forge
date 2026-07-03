@@ -1,0 +1,57 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging/build outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test/cache/tooling
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# IDE/editor local settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Maple Forge data rules
+# Do not commit full raw dataset.
+data/raw/*
+!data/raw/.gitkeep
+
+# Do not commit full processed dataset.
+data/processed/*
+!data/processed/.gitkeep
+
+# Samples folder is tracked.
+# The required 500-record sample can be committed later.
+data/samples/*
+!data/samples/.gitkeep
+!data/samples/grants.sample.json
