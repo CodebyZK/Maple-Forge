@@ -5,7 +5,7 @@ from maple_forge import config
 
 
 def test_package_has_version() -> None:
-    assert maple_forge.__version__ == "0.1.0"
+    assert maple_forge.__version__ == "0.2.0"
 
 
 def test_project_root_exists() -> None:

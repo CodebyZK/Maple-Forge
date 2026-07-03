@@ -2,9 +2,9 @@
 
 Maple Forge is the data pipeline repository for MapleScope. It downloads,
 cleans, validates, and exports Canadian federal grants and contributions data
-into a stable JSON format for downstream projects.
+into stable, database-ready files for downstream projects.
 
-Current milestone: `v0.1.0`
+Current milestone: `v0.2.0`
 
 ## Data source
 
@@ -45,24 +45,27 @@ PowerShell:
 
 ```powershell
 maple-forge-download
-maple-forge-export-sample
+maple-forge-build
 ```
 
 Bash or zsh:
 
 ```bash
 maple-forge-download
-maple-forge-export-sample
+maple-forge-build
 ```
 
-The export command cleans and validates the downloaded data, reports rejected
-records, and writes the deterministic 500-record sample.
+The build command performs one source pass and writes the full Parquet dataset,
+the deterministic 500-record JSON sample, the rejection report, and a manifest.
 
 The commands create these ignored working files and committed output:
 
 - `data/raw/grants.csv`: complete source CSV, not committed
 - `data/raw/grants.metadata.json`: URL, UTC retrieval time, byte count, and SHA-256
+- `data/processed/grants.parquet`: every clean, valid, unique grant
 - `data/processed/grants.rejected.jsonl`: one validation report per rejected row
+- `data/processed/grants.manifest.json`: source lineage, schema version, counts,
+  and SHA-256 checksums
 - `data/samples/grants.sample.json`: deterministic canonical sample
 
 Override the resource URL when necessary:
@@ -102,8 +105,11 @@ src/maple_forge/
 ├── download.py    streaming HTTP download and retrieval metadata
 ├── clean.py       source normalization and canonical field mapping
 ├── validate.py    accepted/rejected record partitioning
-└── export.py      chunked processing and deterministic JSON export
+└── export.py      one-pass Parquet, sample, rejection, and manifest build
 ```
+
+The full export uses Parquet so Atlas can load a typed, compressed dataset
+without Forge introducing a database or SQL dependency.
 
 The deterministic sample contains the records with the 500 lexicographically
 smallest stable IDs and is sorted by `record_id`. IDs are derived from the
@@ -122,8 +128,8 @@ validation rules.
   Canadian name or postal abbreviation.
 - Repeated source identities are treated as duplicates. Conflicting rows with
   the same reference and amendment identifier retain the first occurrence.
-- Exact cross-chunk deduplication keeps accepted record IDs in memory. If the
-  source grows substantially, this index should move to bounded on-disk storage.
+- Exact cross-chunk deduplication uses a temporary on-disk SQLite index so the
+  complete export does not retain every accepted record ID in memory.
 - The committed sample is for development and demonstration, not statistical
   analysis.
 
