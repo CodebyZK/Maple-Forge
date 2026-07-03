@@ -82,7 +82,8 @@ def _date_column(frame: pd.DataFrame, name: str) -> pd.Series:
         errors="coerce",
         format="mixed",
     )
-    return parsed.dt.strftime("%Y-%m-%d")
+    formatted = parsed.dt.strftime("%Y-%m-%d")
+    return formatted.where(formatted.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False))
 
 
 def _province_column(frame: pd.DataFrame) -> pd.Series:
@@ -154,6 +155,12 @@ def clean_chunk(
                 "agreement_title_en",
                 "agreement_title_fr",
                 "agreement_number",
+                "prog_name_en",
+                "prog_name_fr",
+                "prog_purpose_en",
+                "prog_purpose_fr",
+                "description_en",
+                "description_fr",
             ),
             "agreement_value": _money_column(normalized, "agreement_value"),
             "agreement_start_date": _date_column(
@@ -173,6 +180,8 @@ def clean_chunk(
                 normalized,
                 "description_en",
                 "description_fr",
+                "prog_purpose_en",
+                "prog_purpose_fr",
             ),
             "source_url": source_url,
             "retrieved_at": retrieved_at,

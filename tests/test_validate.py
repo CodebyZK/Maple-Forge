@@ -42,11 +42,18 @@ def test_invalid_record_reports_all_relevant_errors() -> None:
 
 def test_validate_records_partitions_without_silent_discard() -> None:
     invalid = deepcopy(valid_record())
-    invalid["description"] = ""
+    invalid["department"] = ""
 
     result = validate_records([valid_record(), invalid])
 
     assert len(result.accepted) == 1
     assert len(result.rejected) == 1
-    assert result.rejected[0].record["description"] == ""
-    assert result.rejected[0].errors == ("description is required",)
+    assert result.rejected[0].record["department"] == ""
+    assert result.rejected[0].errors == ("department is required",)
+
+
+def test_description_is_optional() -> None:
+    record = valid_record()
+    record["description"] = None
+
+    assert validate_record(record) == ()

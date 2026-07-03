@@ -105,3 +105,66 @@ def test_record_id_distinguishes_amendments() -> None:
     )
 
     assert records[0]["record_id"] != records[1]["record_id"]
+
+
+def test_clean_chunk_uses_program_fields_when_record_text_is_missing() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "ref_number": "fallback-record",
+                "recipient_legal_name": "Example Recipient",
+                "agreement_value": "1000",
+                "owner_org_title": "Example Department",
+                "prog_name_en": "Community Program",
+                "prog_purpose_en": "Supports community projects.",
+            }
+        ]
+    )
+
+    record = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )[0]
+
+    assert record["agreement_title"] == "Community Program"
+    assert record["description"] == "Supports community projects."
+
+
+def test_clean_chunk_uses_description_as_final_title_fallback() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "ref_number": "description-title",
+                "recipient_legal_name": "Example Recipient",
+                "agreement_value": "1000",
+                "owner_org_title": "Example Department",
+                "description_en": "Published project description.",
+            }
+        ]
+    )
+
+    record = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )[0]
+
+    assert record["agreement_title"] == "Published project description."
+
+
+def test_clean_chunk_treats_malformed_optional_date_as_missing() -> None:
+    frame = pd.DataFrame(
+        {
+            "ref_number": ["bad-date"],
+            "agreement_end_date": ["209-10-16"],
+        }
+    )
+
+    record = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )[0]
+
+    assert record["agreement_end_date"] is None

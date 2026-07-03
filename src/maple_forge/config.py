@@ -18,7 +18,7 @@ MANIFEST_JSON = PROCESSED_DIR / "grants.manifest.json"
 
 SAMPLE_SIZE = 500
 CSV_CHUNK_SIZE = 10_000
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 GRANTS_CSV_URL_ENV_VAR = "MAPLE_FORGE_GRANTS_CSV_URL"
 
@@ -54,7 +54,6 @@ REQUIRED_FIELDS = (
     "agreement_title",
     "agreement_value",
     "department",
-    "description",
     "source_url",
     "retrieved_at",
 )
