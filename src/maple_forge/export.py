@@ -23,6 +23,7 @@ import pyarrow.parquet as pq
 from maple_forge import config
 from maple_forge.clean import clean_chunk
 from maple_forge.io import write_json_atomic
+from maple_forge.recipients import assign_recipient_ids
 from maple_forge.validate import RejectedRecord, ValidationResult, validate_records
 
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,8 @@ STAGE_SCHEMA = pa.schema(
         pa.field("reference_number", pa.string()),
         pa.field("amendment_number", pa.int32()),
         pa.field("recipient_name", pa.string()),
+        pa.field("recipient_type", pa.string()),
+        pa.field("business_number", pa.string()),
         pa.field("agreement_title", pa.string()),
         pa.field("agreement_value", pa.float64()),
         pa.field("agreement_start_date", pa.date32()),
@@ -53,8 +56,13 @@ PARQUET_SCHEMA = pa.schema(
         *STAGE_SCHEMA,
         pa.field("is_latest_amendment", pa.bool_()),
         pa.field("amendment_count", pa.int32()),
+        pa.field("recipient_id", pa.string()),
+        pa.field("recipient_is_person", pa.bool_()),
+        pa.field("recipient_is_aggregate", pa.bool_()),
     ]
 )
+
+RECIPIENT_COLUMNS = ("recipient_name", "recipient_type", "business_number", "province")
 
 FINALIZE_BATCH_SIZE = 100_000
 
@@ -134,14 +142,19 @@ def _parquet_record(record: dict[str, Any]) -> dict[str, Any]:
     return converted
 
 
-def _amendment_flags(stage_path: Path) -> pa.Table:
-    """Derive per-record amendment flags, aligned to the staged row order.
+def _derived_columns(stage_path: Path) -> pa.Table:
+    """Derive per-record columns that depend on other rows.
 
     Each amendment row restates the agreement's full value, so only the
     highest amendment number of an agreement may be counted in totals.
+    Recipient IDs depend on how many names share a business number.
+    The result is aligned to the staged row order.
     """
     keys = pq.read_table(
         stage_path, columns=["record_id", "agreement_id", "amendment_number"]
+    )
+    recipients = assign_recipient_ids(
+        pq.read_table(stage_path, columns=list(RECIPIENT_COLUMNS)).to_pandas()
     )
     keys = keys.append_column(
         "_row", pa.array(range(keys.num_rows), type=pa.int64())
@@ -158,6 +171,15 @@ def _amendment_flags(stage_path: Path) -> pa.Table:
             ),
             "amendment_count": pc.cast(
                 joined["amendment_number_count"], pa.int32()
+            ),
+            "recipient_id": pa.array(
+                recipients["recipient_id"].tolist(), type=pa.string()
+            ),
+            "recipient_is_person": pa.array(
+                recipients["recipient_is_person"].tolist(), type=pa.bool_()
+            ),
+            "recipient_is_aggregate": pa.array(
+                recipients["recipient_is_aggregate"].tolist(), type=pa.bool_()
             ),
         }
     )
@@ -181,7 +203,15 @@ def _write_final_parquet(
             table = pa.Table.from_batches([batch])
             table = table.append_column(
                 "is_latest_amendment", batch_flags["is_latest_amendment"]
-            ).append_column("amendment_count", batch_flags["amendment_count"])
+            ).append_column(
+                "amendment_count", batch_flags["amendment_count"]
+            ).append_column(
+                "recipient_id", batch_flags["recipient_id"]
+            ).append_column(
+                "recipient_is_person", batch_flags["recipient_is_person"]
+            ).append_column(
+                "recipient_is_aggregate", batch_flags["recipient_is_aggregate"]
+            )
             writer.write_table(table.select(PARQUET_SCHEMA.names).cast(PARQUET_SCHEMA))
             offset += rows
     if offset != flags.num_rows:
@@ -196,6 +226,9 @@ def _annotate_sample(sample: list[dict[str, Any]], flags: pa.Table) -> None:
         row = by_id[str(record["record_id"])]
         record["is_latest_amendment"] = bool(row["is_latest_amendment"])
         record["amendment_count"] = int(row["amendment_count"])
+        record["recipient_id"] = str(row["recipient_id"])
+        record["recipient_is_person"] = bool(row["recipient_is_person"])
+        record["recipient_is_aggregate"] = bool(row["recipient_is_aggregate"])
 
 
 def _sha256(path: Path) -> str:
@@ -299,6 +332,7 @@ def export_sample(
     sample_heap: list[tuple[int, str, dict[str, Any]]] = []
     accepted_ids: set[str] = set()
     agreements: dict[str, tuple[int, int]] = {}
+    recipient_rows: list[dict[str, Any]] = []
     accepted_count = 0
     duplicate_count = 0
     rejected_count = 0
@@ -327,13 +361,31 @@ def export_sample(
                     amendment = int(record["amendment_number"])
                     latest, count = agreements.get(agreement_id, (amendment, 0))
                     agreements[agreement_id] = (max(latest, amendment), count + 1)
+                    recipient_rows.append(
+                        {
+                            "record_id": record_id,
+                            **{column: record[column] for column in RECIPIENT_COLUMNS},
+                        }
+                    )
                     _add_to_sample(sample_heap, record, sample_size)
         rejected_temporary.replace(rejected_path)
     finally:
         rejected_temporary.unlink(missing_ok=True)
 
     sample = _sample_records(sample_heap)
+    recipient_frame = pd.DataFrame(
+        recipient_rows, columns=["record_id", *RECIPIENT_COLUMNS]
+    )
+    recipient_by_record: dict[str, dict[str, Any]] = {}
+    if recipient_rows:
+        assigned = assign_recipient_ids(recipient_frame)
+        assigned.index = recipient_frame["record_id"]
+        recipient_by_record = assigned.to_dict(orient="index")
     for record in sample:
+        recipient = recipient_by_record[str(record["record_id"])]
+        record["recipient_id"] = str(recipient["recipient_id"])
+        record["recipient_is_person"] = bool(recipient["recipient_is_person"])
+        record["recipient_is_aggregate"] = bool(recipient["recipient_is_aggregate"])
         latest, count = agreements[str(record["agreement_id"])]
         record["is_latest_amendment"] = int(record["amendment_number"]) == latest
         record["amendment_count"] = count
@@ -446,7 +498,7 @@ def build_dataset(
         dedup_path.unlink(missing_ok=True)
 
         LOGGER.info("Deriving latest amendments for %s records", f"{accepted_count:,}")
-        flags = _amendment_flags(stage_path)
+        flags = _derived_columns(stage_path)
         agreement_count = int(pc.sum(flags["is_latest_amendment"]).as_py() or 0)
         _write_final_parquet(stage_path, parquet_temporary, flags)
         sample = _sample_records(sample_heap)

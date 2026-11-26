@@ -18,7 +18,7 @@ MANIFEST_JSON = PROCESSED_DIR / "grants.manifest.json"
 
 SAMPLE_SIZE = 500
 CSV_CHUNK_SIZE = 10_000
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "2.1.0"
 
 GRANTS_CSV_URL_ENV_VAR = "MAPLE_FORGE_GRANTS_CSV_URL"
 
@@ -39,6 +39,8 @@ CANONICAL_FIELDS = (
     "reference_number",
     "amendment_number",
     "recipient_name",
+    "recipient_type",
+    "business_number",
     "agreement_title",
     "agreement_value",
     "agreement_start_date",
@@ -52,14 +54,18 @@ CANONICAL_FIELDS = (
     "retrieved_at",
 )
 
-# Fields derived after a complete pass, because they depend on every amendment
-# of an agreement. They are present in published Parquet and sample records.
-AMENDMENT_FIELDS = (
+# Fields derived after a complete pass, because they depend on other rows
+# (every amendment of an agreement, every name sharing a business number).
+# They are present in published Parquet and sample records.
+DERIVED_FIELDS = (
     "is_latest_amendment",
     "amendment_count",
+    "recipient_id",
+    "recipient_is_person",
+    "recipient_is_aggregate",
 )
 
-PUBLISHED_FIELDS = (*CANONICAL_FIELDS, *AMENDMENT_FIELDS)
+PUBLISHED_FIELDS = (*CANONICAL_FIELDS, *DERIVED_FIELDS)
 
 REQUIRED_FIELDS = (
     "record_id",
