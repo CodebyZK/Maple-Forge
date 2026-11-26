@@ -9,6 +9,8 @@ incoming_dir=${1:?usage: publish-atlas-dataset.sh INCOMING_DIRECTORY}
 data_root=${MAPLE_ATLAS_DATA_ROOT:-/srv/maple-atlas/data}
 service_name=${MAPLE_ATLAS_SERVICE:-maple-data-api}
 minimum_records=${MAPLE_ATLAS_MIN_RECORDS:-1000000}
+health_url=${MAPLE_ATLAS_HEALTH_URL:-http://127.0.0.1:8000/health}
+health_timeout=${MAPLE_ATLAS_HEALTH_TIMEOUT:-60}
 parquet="$incoming_dir/grants.parquet"
 manifest="$incoming_dir/grants.manifest.json"
 
@@ -92,8 +94,16 @@ fi
 
 release="${expected_sha:0:16}"
 release_dir="$releases/$release"
+reuse_release=false
 if [[ -e "$release_dir" ]]; then
-  fail "release directory already exists but is not current: $release_dir"
+  # A previous attempt that rolled back leaves its release behind. Reuse it
+  # only if it holds exactly this dataset.
+  if [[ "$(sha256sum "$release_dir/grants.parquet" 2>/dev/null | cut -d' ' -f1)" == "$expected_sha" ]] \
+    && cmp -s "$manifest" "$release_dir/grants.manifest.json"; then
+    reuse_release=true
+  else
+    fail "release directory already exists with different content: $release_dir"
+  fi
 fi
 
 staging="$releases/.${release}.staged-$$"
@@ -106,12 +116,14 @@ rollback() {
   fi
 }
 
-mkdir "$staging"
-trap 'rm -rf "$staging"' EXIT
-install -m 0640 "$parquet" "$staging/grants.parquet"
-install -m 0640 "$manifest" "$staging/grants.manifest.json"
-mv "$staging" "$release_dir"
-trap - EXIT
+if [[ "$reuse_release" == false ]]; then
+  mkdir "$staging"
+  trap 'rm -rf "$staging"' EXIT
+  install -m 0640 "$parquet" "$staging/grants.parquet"
+  install -m 0640 "$manifest" "$staging/grants.manifest.json"
+  mv "$staging" "$release_dir"
+  trap - EXIT
+fi
 
 if [[ -L "$current" ]]; then
   previous_target=$(readlink "$current")
@@ -125,8 +137,22 @@ if ! sudo -n systemctl restart "$service_name"; then
   rollback
   fail "could not restart $service_name; restored the previous release"
 fi
-if ! curl --fail --silent --show-error --max-time 30 http://127.0.0.1:8000/health \
-  | python3 -c "import json,sys; health=json.load(sys.stdin); sys.exit(0 if health.get('status') == 'ok' and health.get('recordCount') == $expected_records else 1)"; then
+# The API reads the dataset during startup, so it is not listening the moment
+# systemctl returns. Wait up to $health_timeout seconds for a matching health.
+healthy() {
+  curl --fail --silent --max-time 10 "$health_url" \
+    | python3 -c "import json,sys; health=json.load(sys.stdin); sys.exit(0 if health.get('status') == 'ok' and health.get('recordCount') == $expected_records else 1)" \
+    2>/dev/null
+}
+health_ok=false
+for _ in $(seq 1 "$health_timeout"); do
+  if healthy; then
+    health_ok=true
+    break
+  fi
+  sleep 1
+done
+if [[ "$health_ok" != true ]]; then
   rollback
   fail "health check failed; restored the previous release"
 fi

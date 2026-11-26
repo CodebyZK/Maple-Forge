@@ -32,3 +32,13 @@ def test_publish_script_health_check_uses_agreement_count() -> None:
 
     assert 'manifest["counts"].get("agreements")' in script
     assert "$expected_count" not in script
+
+
+def test_publish_script_waits_for_health_and_reuses_matching_release() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert 'health_timeout=${MAPLE_ATLAS_HEALTH_TIMEOUT:-60}' in script
+    assert 'for _ in $(seq 1 "$health_timeout"); do' in script
+    assert "reuse_release=true" in script
+    assert 'cmp -s "$manifest" "$release_dir/grants.manifest.json"' in script
+    assert "release directory already exists with different content" in script
