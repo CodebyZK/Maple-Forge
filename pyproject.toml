@@ -23,6 +23,7 @@ dev = [
 maple-forge-download = "maple_forge.download:main"
 maple-forge-export-sample = "maple_forge.export:main"
 maple-forge-build = "maple_forge.export:main_build"
+maple-forge-charities = "maple_forge.charities:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
