@@ -26,7 +26,8 @@ def test_valid_business_number_rejects_placeholders() -> None:
 
 
 def test_looks_like_person() -> None:
-    assert looks_like_person("Anyone Corp", "P")
+    assert looks_like_person("Anyone, Some", "P")
+    assert not looks_like_person("Anyone Corp", "P")
     assert looks_like_person("Jakobi, Jennifer", "S")
     assert looks_like_person("Jakobi, Jennifer", None)
     assert not looks_like_person("Toronto, City of", None)
@@ -112,3 +113,19 @@ def test_missing_and_blank_names_do_not_break_assignment() -> None:
     )
     assert not assigned["recipient_is_aggregate"].any()
     assert assigned["recipient_id"].notna().all()
+
+
+def test_company_markers_override_person_type_and_name_shape() -> None:
+    for name in (
+        "2076729 Alberta Inc.",
+        "TSOLUM FISHING CORPORATION",
+        "Shamrock Colony Farming Co. Ltd., and 1648258 Alberta Ltd.",
+        "Native Women's Association of Canada",
+        "Lyle Wood (o/a Locustwood Farms, Tyler Wood)",
+        "LAVAL POINCON & MATRICE LTéE",
+    ):
+        assert not looks_like_person(name, "P"), name
+    assert not looks_like_person("Info-Tech Research Group, Inc.", "O")
+    assert looks_like_person("Hu, Zhiying", "P")
+    assert looks_like_person("Farmer, Jane", "P")
+    assert looks_like_person("Inch, Robert", "S")

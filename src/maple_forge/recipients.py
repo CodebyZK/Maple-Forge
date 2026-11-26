@@ -89,6 +89,14 @@ _ORGANIZATION_WORDS = frozenset(
     }
 )
 _PLACEHOLDER_NUMBERS = frozenset({"123456789", "987654321"})
+# Legal forms, business words, "o/a" (operating as) and numbered companies.
+_COMPANY_MARKERS = re.compile(
+    r"\b(?:inc|ltd|limited|lt[eé]e|corp|corporation|incorporated|llc|llp|ulc|plc"
+    r"|company|holdings|enterprises|farms?|farming|ferme|colony|ranch|group|groupe"
+    r"|association|society|cooperative|co-op|partnership)\b"
+    r"|\bo/a\b|\d{4,}",
+    re.IGNORECASE,
+)
 
 
 def normalize_name(name: object) -> str | None:
@@ -118,11 +126,23 @@ def valid_business_number(value: object) -> str | None:
     return root
 
 
+def has_company_marker(name: object) -> bool:
+    """Whether a name is clearly a business or organization."""
+    return name is not None and bool(_COMPANY_MARKERS.search(str(name)))
+
+
 def looks_like_person(name: object, recipient_type: object) -> bool:
-    """Whether a recipient should be treated as an individual."""
+    """Whether a recipient should be treated as an individual.
+
+    Departments sometimes tag companies as type P ("2076729 Alberta Inc.",
+    "Tsolum Fishing Corporation"), and "Name, Inc." looks like "Last, First",
+    so company markers override both the type and the name shape.
+    """
+    if name is None or has_company_marker(name):
+        return False
     if recipient_type == "P":
         return True
-    if recipient_type not in (None, "S", "O") or name is None:
+    if recipient_type not in (None, "S", "O"):
         return False
     text = str(name).strip()
     if not _PERSON_NAME.match(text):
