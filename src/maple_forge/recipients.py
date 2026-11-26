@@ -73,7 +73,6 @@ _ORGANIZATION_WORDS = frozenset(
         "council",
         "county",
         "district",
-        "first",
         "foundation",
         "government",
         "institute",
@@ -116,11 +115,13 @@ def valid_business_number(value: object) -> str | None:
     """Return the 9-digit BN root, or None for missing and placeholder values."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
-    digits = re.sub(r"\s+", "", str(value))
-    match = re.match(r"^(\d{9})", digits)
-    if not match:
+    # The root is the leading run of digits, which some rows punctuate
+    # ("123-456-789", "123 456 789 RC0001"); the program suffix follows it.
+    leading = re.match(r"^[\d\s.\-]+", str(value).strip())
+    digits = re.sub(r"\D", "", leading.group()) if leading else ""
+    if len(digits) < 9:
         return None
-    root = match.group(1)
+    root = digits[:9]
     if len(set(root)) == 1 or root in _PLACEHOLDER_NUMBERS:
         return None
     return root
@@ -140,15 +141,18 @@ def looks_like_person(name: object, recipient_type: object) -> bool:
     """
     if name is None or has_company_marker(name):
         return False
+    text = str(name).strip()
+    tokens = set(_NON_ALPHANUMERIC.sub(" ", text.casefold()).split())
+    # Organization words ("Toronto, City of") also override a type P tag.
+    if tokens & _ORGANIZATION_WORDS:
+        return False
     if recipient_type == "P":
         return True
     if recipient_type not in (None, "S", "O"):
         return False
-    text = str(name).strip()
     if not _PERSON_NAME.match(text):
         return False
-    tokens = set(_NON_ALPHANUMERIC.sub(" ", text.casefold()).split())
-    return bool(tokens) and len(tokens) <= 5 and not tokens & _ORGANIZATION_WORDS
+    return bool(tokens) and len(tokens) <= 5
 
 
 def _hash(prefix: str, value: str) -> str:

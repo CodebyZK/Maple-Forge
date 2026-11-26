@@ -62,7 +62,7 @@ def test_name_variants_with_one_business_number_share_an_id() -> None:
 
 
 def test_shared_university_number_never_merges_people_or_orgs() -> None:
-    rows = [(f"Person{index}, First", "P", "333333334", "ON") for index in range(3)]
+    rows = [(f"Smith{index}, Anna", "P", "333333334", "ON") for index in range(3)]
     rows += [
         (f"Lab {index}", "S", "444444445", "ON")
         for index in range(MAX_NAMES_PER_BUSINESS_NUMBER + 1)
@@ -129,3 +129,16 @@ def test_company_markers_override_person_type_and_name_shape() -> None:
     assert looks_like_person("Hu, Zhiying", "P")
     assert looks_like_person("Farmer, Jane", "P")
     assert looks_like_person("Inch, Robert", "S")
+
+
+def test_punctuated_business_numbers_keep_their_root() -> None:
+    assert valid_business_number("123-456-782") == "123456782"
+    assert valid_business_number("123 456 782 RC0001") == "123456782"
+    assert valid_business_number("12-345") is None
+    assert valid_business_number("111-111-111") is None
+
+
+def test_organization_words_override_person_type() -> None:
+    assert not looks_like_person("Toronto, City of", "P")
+    assert not looks_like_person("Kelowna School District", "P")
+    assert looks_like_person("Tong, Michelle", "P")
