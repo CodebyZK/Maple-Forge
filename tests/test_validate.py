@@ -6,7 +6,12 @@ from maple_forge.validate import validate_record, validate_records
 def valid_record() -> dict[str, object]:
     return {
         "record_id": "grant_0123456789abcdef01234567",
+        "agreement_id": "agreement_0123456789abcdef01234567",
+        "reference_number": "001-2025-2026-Q1-00001",
+        "amendment_number": 0,
         "recipient_name": "Example Society",
+        "recipient_type": "N",
+        "business_number": "123456782",
         "agreement_title": "A useful project",
         "agreement_value": 1000.0,
         "agreement_start_date": "2025-04-01",
@@ -50,6 +55,13 @@ def test_validate_records_partitions_without_silent_discard() -> None:
     assert len(result.rejected) == 1
     assert result.rejected[0].record["department"] == ""
     assert result.rejected[0].errors == ("department is required",)
+
+
+def test_amendment_number_must_be_a_non_negative_integer() -> None:
+    for value in (None, -1, 1.5, True, "1"):
+        record = valid_record()
+        record["amendment_number"] = value
+        assert validate_record(record), value
 
 
 def test_description_is_optional() -> None:

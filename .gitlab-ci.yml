@@ -3,6 +3,7 @@ image: python:3.12-slim
 stages:
   - test
   - build
+  - deploy
 
 default:
   cache:
@@ -38,3 +39,34 @@ dataset-artifacts:
       - build/grants.rejected.jsonl
       - build/grants.manifest.json
     expire_in: 30 days
+
+refresh-atlas-production:
+  stage: deploy
+  resource_group: atlas-production-dataset
+  before_script:
+    - python -m pip install --cache-dir .cache/pip -e ".[dev]"
+    - apt-get update -qq && apt-get install -y --no-install-recommends openssh-client
+    - install -d -m 0700 ~/.ssh
+    - printf '%s\n' "$ATLAS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+    - chmod 0600 ~/.ssh/id_ed25519
+    - printf '%s\n' "$ATLAS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+  script:
+    - maple-forge-download
+    - >-
+      maple-forge-build
+      --parquet build/grants.parquet
+      --sample build/grants.sample.json
+      --rejected build/grants.rejected.jsonl
+      --manifest build/grants.manifest.json
+    - python -c "import json; m=json.load(open('build/grants.manifest.json')); assert m['counts']['accepted'] >= 1000000; assert m['artifacts']['parquet']['row_count'] == m['counts']['accepted']"
+    - remote_incoming="/srv/maple-atlas/data/incoming/${CI_PIPELINE_ID}"
+    - ssh "$ATLAS_SSH_USER@$ATLAS_SSH_HOST" "install -d -m 0750 '$remote_incoming'"
+    - scp build/grants.parquet build/grants.manifest.json "$ATLAS_SSH_USER@$ATLAS_SSH_HOST:$remote_incoming/"
+    - scp scripts/publish-atlas-dataset.sh "$ATLAS_SSH_USER@$ATLAS_SSH_HOST:$remote_incoming/publish-atlas-dataset.sh"
+    - ssh "$ATLAS_SSH_USER@$ATLAS_SSH_HOST" "bash '$remote_incoming/publish-atlas-dataset.sh' '$remote_incoming'"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  environment:
+    name: atlas-production

@@ -126,8 +126,11 @@ validation rules.
 - English source text is preferred, with French used as a fallback.
 - Province and territory values are normalized only when they match a known
   Canadian name or postal abbreviation.
-- Repeated source identities are treated as duplicates. Conflicting rows with
-  the same reference and amendment identifier retain the first occurrence.
+- Repeated source identities (department, reference number, and amendment
+  number) are treated as duplicates and the first occurrence is retained.
+- Amendment rows restate an agreement's full value. Every amendment is kept,
+  and `is_latest_amendment` marks the one row per agreement that totals must
+  count. See [data-dictionary.md](docs/data-dictionary.md#amendments-and-totals).
 - Exact cross-chunk deduplication uses a temporary on-disk SQLite index so the
   complete export does not retain every accepted record ID in memory.
 - The committed sample is for development and demonstration, not statistical
@@ -137,6 +140,41 @@ validation rules.
 
 Do not commit the complete raw or processed dataset. Only small test fixtures,
 directory placeholders, and the required 500-record sample belong in Git.
+
+## Atlas production refresh
+
+The `refresh-atlas-production` GitLab job builds the complete official CSV and
+publishes it only from scheduled pipelines (or a manually started default
+branch pipeline). The source declares a quarterly update frequency, so create
+a GitLab pipeline schedule for **06:30 UTC on the 15th of January, April, July,
+and October** (`30 6 15 1,4,7,10 *`). This leaves time for the publisher's
+quarterly release while avoiding unnecessary multi-gigabyte downloads.
+
+The job needs existing deployment credentials configured as protected, masked
+GitLab variables: `ATLAS_SSH_HOST`, `ATLAS_SSH_USER`,
+`ATLAS_SSH_PRIVATE_KEY`, and `ATLAS_SSH_KNOWN_HOSTS`. It uploads a verified
+Parquet/manifest pair, checks the SHA-256 and record-count floor, and invokes
+`scripts/publish-atlas-dataset.sh` on the host. The script creates an immutable
+release and atomically switches `/srv/maple-atlas/data/current`; identical
+source content is a no-op. A restart or health-check failure restores the
+previous release.
+
+The health check expects the Data API's `recordCount` to equal the
+manifest's `agreements` count (latest amendments), or `accepted` for older
+manifests. Each run's upload directory under
+`/srv/maple-atlas/data/incoming` is removed after a publication or no-op;
+failed uploads are kept for investigation and should be cleaned up by hand.
+
+Before enabling the schedule, configure the data API service paths as:
+
+```text
+MAPLE_PARQUET_PATH=/srv/maple-atlas/data/current/grants.parquet
+MAPLE_MANIFEST_PATH=/srv/maple-atlas/data/current/grants.manifest.json
+```
+
+The deploy user must be allowed to run `sudo -n systemctl restart
+maple-data-api`. Retain release directories for rollback; do not use a cleanup
+job until an operational retention policy has been agreed.
 
 ## License
 

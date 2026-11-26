@@ -68,7 +68,9 @@ def test_export_sample_is_deterministic_and_reports_rejections(
     assert [record["record_id"] for record in records] == sorted(
         record["record_id"] for record in records
     )
-    assert any(record["recipient_name"] == "NA" for record in records)
+    assert first.agreement_count == 3
+    assert all(record["is_latest_amendment"] for record in records)
+    assert all(record["amendment_count"] == 1 for record in records)
     assert rejected[0]["errors"] == ["recipient_name is required"]
 
 
@@ -127,6 +129,7 @@ def test_build_dataset_writes_all_artifacts_and_manifest(tmp_path: Path) -> None
     assert manifest["source"]["source_url"] == "https://example.test/grants.csv"
     assert manifest["counts"] == {
         "accepted": 3,
+        "agreements": 3,
         "duplicates": 1,
         "rejected": 1,
         "sample": 2,
@@ -177,6 +180,69 @@ def test_build_dataset_handles_many_unique_records_in_chunks(tmp_path: Path) -> 
     assert summary.accepted_count == row_count
     assert pq.read_metadata(summary.parquet_path).num_rows == row_count
     assert not list(tmp_path.glob("*.dedup.sqlite"))
+
+
+AMENDMENT_CSV = """ref_number,amendment_number,recipient_legal_name,agreement_title_en,agreement_value,owner_org,owner_org_title
+REF-1,0,Alpha,Alpha Project,100,dept-a,Department A
+REF-1,1,Alpha,Alpha Project,150,dept-a,Department A
+REF-1,2,Alpha,Alpha Project,120,dept-a,Department A
+REF-1,0,Beta,Beta Project,500,dept-b,Department B
+REF-2,,Gamma,Gamma Project,70,dept-a,Department A
+"""
+
+
+def test_build_dataset_flags_latest_amendment_per_agreement(tmp_path: Path) -> None:
+    input_csv = tmp_path / "grants.csv"
+    metadata_path = tmp_path / "grants.metadata.json"
+    input_csv.write_text(AMENDMENT_CSV, encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "source_url": "https://example.test/grants.csv",
+                "retrieved_at": "2026-07-02T12:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_dataset(
+        input_csv,
+        metadata_path,
+        tmp_path / "grants.parquet",
+        tmp_path / "grants.sample.json",
+        tmp_path / "grants.rejected.jsonl",
+        tmp_path / "grants.manifest.json",
+        sample_size=5,
+        chunk_size=2,
+    )
+
+    frame = pd.read_parquet(summary.parquet_path)
+    latest = frame[frame["is_latest_amendment"]]
+    sample = json.loads(summary.sample_path.read_text(encoding="utf-8"))
+    manifest = json.loads(summary.manifest_path.read_text(encoding="utf-8"))
+
+    assert summary.accepted_count == 5
+    assert summary.duplicate_count == 0
+    assert summary.agreement_count == 3
+    assert manifest["counts"]["agreements"] == 3
+    assert latest["agreement_value"].sum() == 120 + 500 + 70
+    assert frame["agreement_value"].sum() == 940
+    alpha = frame[frame["recipient_name"] == "Alpha"]
+    assert alpha["agreement_id"].nunique() == 1
+    assert set(alpha["amendment_count"]) == {3}
+    assert alpha.loc[alpha["is_latest_amendment"], "amendment_number"].tolist() == [2]
+    assert frame["amendment_number"].dtype == "int32"
+    assert not list(tmp_path.glob("*.stage"))
+    assert sum(record["is_latest_amendment"] for record in sample) == 3
+    assert frame["recipient_id"].notna().all()
+    assert not frame["recipient_is_aggregate"].any()
+    assert not frame["recipient_is_person"].any()
+    assert alpha["recipient_id"].nunique() == 1
+    for record in sample:
+        row = frame[frame["record_id"] == record["record_id"]].iloc[0]
+        assert record["recipient_id"] == row["recipient_id"]
+        assert record["is_latest_amendment"] == bool(row["is_latest_amendment"])
+        assert record["amendment_count"] == int(row["amendment_count"])
 
 
 def test_publish_files_restores_existing_outputs_on_failure(

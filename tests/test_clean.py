@@ -69,9 +69,16 @@ def test_clean_chunk_maps_schema() -> None:
 
     assert len(records) == 2
     record = records[0]
-    identity = "goc-grants:001-2025-2026-Q1-00001:0"
+    agreement = "goc-grants:v2:tbs-sct:001-2025-2026-Q1-00001"
+    identity = f"{agreement}:0"
     expected_id = f"grant_{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+    expected_agreement = (
+        f"agreement_{hashlib.sha256(agreement.encode()).hexdigest()[:24]}"
+    )
     assert record["record_id"] == expected_id
+    assert record["agreement_id"] == expected_agreement
+    assert record["reference_number"] == "001-2025-2026-Q1-00001"
+    assert record["amendment_number"] == 0
     assert record["recipient_name"] == "Example Society"
     assert record["agreement_value"] == 25_000.0
     assert record["agreement_end_date"] is None
@@ -105,6 +112,50 @@ def test_record_id_distinguishes_amendments() -> None:
     )
 
     assert records[0]["record_id"] != records[1]["record_id"]
+    assert records[0]["agreement_id"] == records[1]["agreement_id"]
+    assert [record["amendment_number"] for record in records] == [0, 1]
+
+
+def test_identity_is_scoped_to_owner_organization() -> None:
+    base = {
+        "ref_number": "GC-2017-Q4-00160",
+        "amendment_number": "0",
+        "recipient_legal_name": "Recipient",
+        "agreement_value": "100",
+        "owner_org_title": "Organization",
+    }
+    frame = pd.DataFrame(
+        [
+            {**base, "owner_org": "dept-a"},
+            {**base, "owner_org": "dept-b"},
+        ]
+    )
+
+    records = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )
+
+    assert records[0]["record_id"] != records[1]["record_id"]
+    assert records[0]["agreement_id"] != records[1]["agreement_id"]
+
+
+def test_missing_amendment_is_original_and_invalid_amendment_is_null() -> None:
+    frame = pd.DataFrame(
+        {
+            "ref_number": ["one", "two", "three", "four"],
+            "amendment_number": [None, "2", "1.5", "-1"],
+        }
+    )
+
+    records = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )
+
+    assert [record["amendment_number"] for record in records] == [0, 2, None, None]
 
 
 def test_clean_chunk_uses_program_fields_when_record_text_is_missing() -> None:
@@ -168,3 +219,23 @@ def test_clean_chunk_treats_malformed_optional_date_as_missing() -> None:
     )[0]
 
     assert record["agreement_end_date"] is None
+
+
+
+def test_clean_chunk_treats_pre_1900_dates_as_missing_but_keeps_open_ended() -> None:
+    frame = pd.DataFrame(
+        {
+            "ref_number": ["a", "b", "c"],
+            "agreement_start_date": ["1899-12-30", "0209-10-16", "2024-04-01"],
+            "agreement_end_date": ["9999-12-31", None, "2025-03-31"],
+        }
+    )
+
+    records = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )
+
+    assert [record["agreement_start_date"] for record in records] == [None, None, "2024-04-01"]
+    assert records[0]["agreement_end_date"] == "9999-12-31"
