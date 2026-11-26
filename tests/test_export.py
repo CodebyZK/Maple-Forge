@@ -234,8 +234,13 @@ def test_build_dataset_flags_latest_amendment_per_agreement(tmp_path: Path) -> N
     assert frame["amendment_number"].dtype == "int32"
     assert not list(tmp_path.glob("*.stage"))
     assert sum(record["is_latest_amendment"] for record in sample) == 3
+    assert frame["recipient_id"].notna().all()
+    assert not frame["recipient_is_aggregate"].any()
+    assert not frame["recipient_is_person"].any()
+    assert alpha["recipient_id"].nunique() == 1
     for record in sample:
         row = frame[frame["record_id"] == record["record_id"]].iloc[0]
+        assert record["recipient_id"] == row["recipient_id"]
         assert record["is_latest_amendment"] == bool(row["is_latest_amendment"])
         assert record["amendment_count"] == int(row["amendment_count"])
 

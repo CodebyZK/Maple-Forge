@@ -8,6 +8,7 @@ import re
 import pandas as pd
 
 from maple_forge.config import CANONICAL_FIELDS
+from maple_forge.recipients import RECIPIENT_TYPES, valid_business_number
 
 _NON_WORDS = re.compile(r"[^a-z0-9]+")
 
@@ -96,6 +97,17 @@ def _province_column(frame: pd.DataFrame) -> pd.Series:
     upper = text.str.upper()
     mapped = text.str.casefold().map(PROVINCE_CODES)
     return upper.where(upper.isin(VALID_PROVINCE_CODES), mapped)
+
+
+def _recipient_type_column(frame: pd.DataFrame) -> pd.Series:
+    code = _clean_text_column(frame, "recipient_type").str.upper()
+    return code.where(code.isin(RECIPIENT_TYPES))
+
+
+def _business_number_column(frame: pd.DataFrame) -> pd.Series:
+    return _source_column(frame, "recipient_business_number").map(
+        valid_business_number
+    )
 
 
 def _department_column(frame: pd.DataFrame) -> pd.Series:
@@ -190,6 +202,8 @@ def clean_chunk(
                 "recipient_operating_name",
                 "research_organization_name",
             ),
+            "recipient_type": _recipient_type_column(normalized),
+            "business_number": _business_number_column(normalized),
             "agreement_title": _first_text_column(
                 normalized,
                 "agreement_title_en",
