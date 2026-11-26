@@ -83,6 +83,10 @@ def _date_column(frame: pd.DataFrame, name: str) -> pd.Series:
         errors="coerce",
         format="mixed",
     )
+    # Typos such as "209-10-16" parse as year 209 in newer pandas and format as
+    # "0209-10-16"; spreadsheet placeholders use 1899-12-30. Treat years before
+    # 1900 as missing. Late placeholders (9999-12-31) mean "open-ended" and stay.
+    parsed = parsed.where(parsed.dt.year >= 1900)
     formatted = parsed.dt.strftime("%Y-%m-%d")
     # dt.strftime can expose NaT as "NaT"; also reject malformed/out-of-bounds dates.
     return formatted.where(formatted.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False))

@@ -219,3 +219,23 @@ def test_clean_chunk_treats_malformed_optional_date_as_missing() -> None:
     )[0]
 
     assert record["agreement_end_date"] is None
+
+
+
+def test_clean_chunk_treats_pre_1900_dates_as_missing_but_keeps_open_ended() -> None:
+    frame = pd.DataFrame(
+        {
+            "ref_number": ["a", "b", "c"],
+            "agreement_start_date": ["1899-12-30", "0209-10-16", "2024-04-01"],
+            "agreement_end_date": ["9999-12-31", None, "2025-03-31"],
+        }
+    )
+
+    records = clean_chunk(
+        frame,
+        source_url="https://example.test/grants.csv",
+        retrieved_at="2026-07-02T12:00:00Z",
+    )
+
+    assert [record["agreement_start_date"] for record in records] == [None, None, "2024-04-01"]
+    assert records[0]["agreement_end_date"] == "9999-12-31"
