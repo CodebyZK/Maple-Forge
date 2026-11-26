@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from maple_forge import config
@@ -26,9 +27,12 @@ from maple_forge.validate import RejectedRecord, ValidationResult, validate_reco
 
 LOGGER = logging.getLogger(__name__)
 
-PARQUET_SCHEMA = pa.schema(
+STAGE_SCHEMA = pa.schema(
     [
         pa.field("record_id", pa.string()),
+        pa.field("agreement_id", pa.string()),
+        pa.field("reference_number", pa.string()),
+        pa.field("amendment_number", pa.int32()),
         pa.field("recipient_name", pa.string()),
         pa.field("agreement_title", pa.string()),
         pa.field("agreement_value", pa.float64()),
@@ -44,12 +48,23 @@ PARQUET_SCHEMA = pa.schema(
     ]
 )
 
+PARQUET_SCHEMA = pa.schema(
+    [
+        *STAGE_SCHEMA,
+        pa.field("is_latest_amendment", pa.bool_()),
+        pa.field("amendment_count", pa.int32()),
+    ]
+)
+
+FINALIZE_BATCH_SIZE = 100_000
+
 
 @dataclass(frozen=True)
 class ExportSummary:
     """Counts and paths produced by a sample export."""
 
     accepted_count: int
+    agreement_count: int
     duplicate_count: int
     rejected_count: int
     sample_count: int
@@ -62,6 +77,7 @@ class BuildSummary:
     """Counts and paths produced by a complete pipeline build."""
 
     accepted_count: int
+    agreement_count: int
     duplicate_count: int
     rejected_count: int
     sample_count: int
@@ -116,6 +132,70 @@ def _parquet_record(record: dict[str, Any]) -> dict[str, Any]:
         str(converted["retrieved_at"]).replace("Z", "+00:00")
     )
     return converted
+
+
+def _amendment_flags(stage_path: Path) -> pa.Table:
+    """Derive per-record amendment flags, aligned to the staged row order.
+
+    Each amendment row restates the agreement's full value, so only the
+    highest amendment number of an agreement may be counted in totals.
+    """
+    keys = pq.read_table(
+        stage_path, columns=["record_id", "agreement_id", "amendment_number"]
+    )
+    keys = keys.append_column(
+        "_row", pa.array(range(keys.num_rows), type=pa.int64())
+    )
+    totals = keys.group_by("agreement_id").aggregate(
+        [("amendment_number", "max"), ("amendment_number", "count")]
+    )
+    joined = keys.join(totals, "agreement_id").sort_by("_row")
+    return pa.table(
+        {
+            "record_id": joined["record_id"],
+            "is_latest_amendment": pc.equal(
+                joined["amendment_number"], joined["amendment_number_max"]
+            ),
+            "amendment_count": pc.cast(
+                joined["amendment_number_count"], pa.int32()
+            ),
+        }
+    )
+
+
+def _write_final_parquet(
+    stage_path: Path,
+    final_path: Path,
+    flags: pa.Table,
+) -> None:
+    """Copy staged rows into the published schema with amendment flags."""
+    source = pq.ParquetFile(stage_path)
+    offset = 0
+    with pq.ParquetWriter(final_path, PARQUET_SCHEMA) as writer:
+        for batch in source.iter_batches(batch_size=FINALIZE_BATCH_SIZE):
+            rows = batch.num_rows
+            batch_flags = flags.slice(offset, rows)
+            staged_ids = pa.chunked_array([batch.column("record_id")])
+            if not batch_flags["record_id"].equals(staged_ids):
+                raise RuntimeError("amendment flags are misaligned with staged rows")
+            table = pa.Table.from_batches([batch])
+            table = table.append_column(
+                "is_latest_amendment", batch_flags["is_latest_amendment"]
+            ).append_column("amendment_count", batch_flags["amendment_count"])
+            writer.write_table(table.select(PARQUET_SCHEMA.names).cast(PARQUET_SCHEMA))
+            offset += rows
+    if offset != flags.num_rows:
+        raise RuntimeError("amendment flags do not cover every staged row")
+
+
+def _annotate_sample(sample: list[dict[str, Any]], flags: pa.Table) -> None:
+    sample_ids = pa.array([str(record["record_id"]) for record in sample], pa.string())
+    matches = flags.filter(pc.is_in(flags["record_id"], value_set=sample_ids))
+    by_id = {row["record_id"]: row for row in matches.to_pylist()}
+    for record in sample:
+        row = by_id[str(record["record_id"])]
+        record["is_latest_amendment"] = bool(row["is_latest_amendment"])
+        record["amendment_count"] = int(row["amendment_count"])
 
 
 def _sha256(path: Path) -> str:
@@ -218,6 +298,7 @@ def export_sample(
     rejected_temporary = rejected_path.with_suffix(f"{rejected_path.suffix}.part")
     sample_heap: list[tuple[int, str, dict[str, Any]]] = []
     accepted_ids: set[str] = set()
+    agreements: dict[str, tuple[int, int]] = {}
     accepted_count = 0
     duplicate_count = 0
     rejected_count = 0
@@ -242,15 +323,24 @@ def export_sample(
                         continue
                     accepted_ids.add(record_id)
                     accepted_count += 1
+                    agreement_id = str(record["agreement_id"])
+                    amendment = int(record["amendment_number"])
+                    latest, count = agreements.get(agreement_id, (amendment, 0))
+                    agreements[agreement_id] = (max(latest, amendment), count + 1)
                     _add_to_sample(sample_heap, record, sample_size)
         rejected_temporary.replace(rejected_path)
     finally:
         rejected_temporary.unlink(missing_ok=True)
 
     sample = _sample_records(sample_heap)
+    for record in sample:
+        latest, count = agreements[str(record["agreement_id"])]
+        record["is_latest_amendment"] = int(record["amendment_number"]) == latest
+        record["amendment_count"] = count
     write_json_atomic(output_path, sample, ensure_ascii=False)
     return ExportSummary(
         accepted_count=accepted_count,
+        agreement_count=len(agreements),
         duplicate_count=duplicate_count,
         rejected_count=rejected_count,
         sample_count=len(sample),
@@ -283,6 +373,7 @@ def build_dataset(
         path.parent.mkdir(parents=True, exist_ok=True)
 
     parquet_temporary = parquet_path.with_suffix(f"{parquet_path.suffix}.part")
+    stage_path = parquet_path.with_suffix(f"{parquet_path.suffix}.stage")
     sample_temporary = sample_path.with_suffix(f"{sample_path.suffix}.staged")
     rejected_temporary = rejected_path.with_suffix(f"{rejected_path.suffix}.part")
     manifest_temporary = manifest_path.with_suffix(f"{manifest_path.suffix}.staged")
@@ -293,6 +384,7 @@ def build_dataset(
     rejected_count = 0
     writer: pq.ParquetWriter | None = None
     dedup: sqlite3.Connection | None = None
+    agreement_count = 0
     processing_complete = False
 
     LOGGER.info("Building full dataset from %s", input_csv)
@@ -305,7 +397,7 @@ def build_dataset(
             "CREATE TABLE accepted_ids "
             "(record_id TEXT PRIMARY KEY) WITHOUT ROWID"
         )
-        writer = pq.ParquetWriter(parquet_temporary, PARQUET_SCHEMA)
+        writer = pq.ParquetWriter(stage_path, STAGE_SCHEMA)
         with rejected_temporary.open("w", encoding="utf-8", newline="\n") as rejected:
             chunks = _iter_validated_chunks(
                 input_csv,
@@ -337,7 +429,7 @@ def build_dataset(
                     writer.write_table(
                         pa.Table.from_pylist(
                             [_parquet_record(record) for record in unique_records],
-                            schema=PARQUET_SCHEMA,
+                            schema=STAGE_SCHEMA,
                         )
                     )
                 if chunk_number % 10 == 0:
@@ -349,6 +441,17 @@ def build_dataset(
                     )
         writer.close()
         writer = None
+        dedup.close()
+        dedup = None
+        dedup_path.unlink(missing_ok=True)
+
+        LOGGER.info("Deriving latest amendments for %s records", f"{accepted_count:,}")
+        flags = _amendment_flags(stage_path)
+        agreement_count = int(pc.sum(flags["is_latest_amendment"]).as_py() or 0)
+        _write_final_parquet(stage_path, parquet_temporary, flags)
+        sample = _sample_records(sample_heap)
+        _annotate_sample(sample, flags)
+        del flags
         processing_complete = True
     finally:
         if writer is not None:
@@ -356,11 +459,11 @@ def build_dataset(
         if dedup is not None:
             dedup.close()
         dedup_path.unlink(missing_ok=True)
+        stage_path.unlink(missing_ok=True)
         if not processing_complete:
             parquet_temporary.unlink(missing_ok=True)
             rejected_temporary.unlink(missing_ok=True)
 
-    sample = _sample_records(sample_heap)
     write_json_atomic(sample_temporary, sample, ensure_ascii=False)
     manifest = {
         "schema_version": config.SCHEMA_VERSION,
@@ -371,6 +474,7 @@ def build_dataset(
         },
         "counts": {
             "accepted": accepted_count,
+            "agreements": agreement_count,
             "duplicates": duplicate_count,
             "rejected": rejected_count,
             "sample": len(sample),
@@ -407,13 +511,16 @@ def build_dataset(
         manifest_temporary.unlink(missing_ok=True)
 
     LOGGER.info(
-        "Built %s records, %s sample records, and %s rejection reports",
+        "Built %s records (%s agreements), %s sample records, "
+        "and %s rejection reports",
         f"{accepted_count:,}",
+        f"{agreement_count:,}",
         f"{len(sample):,}",
         f"{rejected_count:,}",
     )
     return BuildSummary(
         accepted_count=accepted_count,
+        agreement_count=agreement_count,
         duplicate_count=duplicate_count,
         rejected_count=rejected_count,
         sample_count=len(sample),

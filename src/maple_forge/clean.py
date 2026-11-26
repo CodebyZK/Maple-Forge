@@ -100,12 +100,49 @@ def _department_column(frame: pd.DataFrame) -> pd.Series:
     return english_title.fillna(_clean_text_column(frame, "owner_org"))
 
 
-def _record_id_column(frame: pd.DataFrame) -> pd.Series:
-    reference = _clean_text_column(frame, "ref_number")
-    amendment = _clean_text_column(frame, "amendment_number").fillna("0")
-    primary_identity = "goc-grants:" + reference + ":" + amendment
+def _amendment_number_column(frame: pd.DataFrame) -> pd.Series:
+    """Parse amendment numbers; missing means the original agreement (0).
 
-    fallback_identity = (
+    Non-integer or negative values become missing so validation rejects them.
+    """
+    text = _clean_text_column(frame, "amendment_number").fillna("0")
+    numbers = pd.to_numeric(text, errors="coerce")
+    valid = numbers.notna() & (numbers >= 0) & (numbers == numbers.round())
+    return numbers.where(valid).astype("Int64")
+
+
+def _hashed_id(prefix: str, identity: pd.Series) -> pd.Series:
+    return identity.map(
+        lambda value: f"{prefix}_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:24]}"
+    )
+
+
+def _identity_columns(frame: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Return stable (record_id, agreement_id) columns.
+
+    Departments reuse reference numbers (for example ``GC-2017-Q4-00160``), so
+    an agreement is identified by the owning organization plus its reference
+    number. A record is one amendment of that agreement.
+    """
+    reference = _clean_text_column(frame, "ref_number")
+    owner = _clean_text_column(frame, "owner_org").fillna("")
+    amendment = _amendment_number_column(frame).astype("string").fillna("invalid")
+    agreement_identity = "goc-grants:v2:" + owner + ":" + reference
+    primary_identity = agreement_identity + ":" + amendment
+
+    fallback_identity = _fallback_identity(frame)
+    has_reference = reference.notna()
+    record_identity = primary_identity.where(has_reference, fallback_identity)
+    agreement_identity = agreement_identity.where(has_reference, fallback_identity)
+    return (
+        _hashed_id("grant", record_identity),
+        _hashed_id("agreement", agreement_identity),
+    )
+
+
+def _fallback_identity(frame: pd.DataFrame) -> pd.Series:
+    """Content identity for rows without a reference number."""
+    return (
         "goc-grants:fallback:"
         + _first_text_column(
             frame,
@@ -126,12 +163,6 @@ def _record_id_column(frame: pd.DataFrame) -> pd.Series:
         + "\x1f"
         + _clean_text_column(frame, "owner_org").fillna("")
     )
-    identity = primary_identity.where(reference.notna(), fallback_identity)
-    return identity.map(
-        lambda value: (
-            f"grant_{hashlib.sha256(value.encode('utf-8')).hexdigest()[:24]}"
-        )
-    )
 
 
 def clean_chunk(
@@ -142,9 +173,13 @@ def clean_chunk(
 ) -> list[dict[str, Any]]:
     """Normalize and map a CSV chunk into canonical records."""
     normalized = normalize_columns(frame)
+    record_id, agreement_id = _identity_columns(normalized)
     records = pd.DataFrame(
         {
-            "record_id": _record_id_column(normalized),
+            "record_id": record_id,
+            "agreement_id": agreement_id,
+            "reference_number": _clean_text_column(normalized, "ref_number"),
+            "amendment_number": _amendment_number_column(normalized),
             "recipient_name": _first_text_column(
                 normalized,
                 "recipient_legal_name",

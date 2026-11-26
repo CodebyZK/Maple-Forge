@@ -6,6 +6,7 @@ import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
+from numbers import Integral
 from typing import Any
 
 from maple_forge.config import CANONICAL_FIELDS, REQUIRED_FIELDS
@@ -68,6 +69,14 @@ def validate_record(record: Mapping[str, Any]) -> tuple[str, ...]:
         or not math.isfinite(float(value))
     ):
         errors.append("agreement_value must be a finite number")
+
+    amendment = record.get("amendment_number")
+    if amendment is not None and (
+        isinstance(amendment, bool)
+        or not isinstance(amendment, Integral)
+        or amendment < 0
+    ):
+        errors.append("amendment_number must be a non-negative integer")
 
     errors.extend(
         f"{field} must be an ISO 8601 date or null"
