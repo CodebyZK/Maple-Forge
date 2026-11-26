@@ -13,12 +13,26 @@ parquet="$incoming_dir/grants.parquet"
 manifest="$incoming_dir/grants.manifest.json"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Each run uploads a full dataset copy into its own incoming directory. Remove
+# it once it is published or found to be identical; failed uploads are kept
+# for investigation. Only directories inside $data_root/incoming are removed.
+cleanup_incoming() {
+  local resolved
+  resolved=$(realpath -e -- "$incoming_dir")
+  [[ "$resolved" == "$(realpath -m -- "$data_root/incoming")"/* ]] \
+    || fail "refusing to remove incoming directory outside $data_root/incoming: $resolved"
+  rm -rf -- "$resolved"
+}
 [[ -f "$parquet" && -f "$manifest" ]] || fail "incoming parquet and manifest are required"
 [[ "$minimum_records" =~ ^[1-9][0-9]*$ ]] || fail "MAPLE_ATLAS_MIN_RECORDS must be a positive integer"
 
 # Do not trust CI artifact names.  Verify the pair and extract only values used
 # for publication.  Python is already required by the Atlas data API host.
-read -r expected_sha expected_count < <(python3 - "$manifest" "$minimum_records" <<'PY'
+# expected_records is what the Data API reports as recordCount: the number of
+# agreements (latest amendments) for Forge schema 2.0.0 and later, otherwise
+# the accepted row count.
+read -r expected_sha expected_records < <(python3 - "$manifest" "$minimum_records" <<'PY'
 import hashlib
 import json
 import re
@@ -42,10 +56,17 @@ if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
     raise SystemExit("manifest parquet checksum is invalid")
 if not source_meta.get("source_url") or not source_meta.get("retrieved_at"):
     raise SystemExit("manifest source lineage is incomplete")
-actual = hashlib.sha256(open(sys.argv[1].replace(".manifest.json", ".parquet"), "rb").read()).hexdigest()
-if actual != digest:
+sha = hashlib.sha256()
+# Stream the file: the dataset can be larger than the memory available.
+with open(manifest_path.replace(".manifest.json", ".parquet"), "rb") as parquet:
+    for block in iter(lambda: parquet.read(4 * 1024 * 1024), b""):
+        sha.update(block)
+if sha.hexdigest() != digest:
     raise SystemExit("incoming parquet checksum does not match manifest")
-print(digest, count)
+agreements = manifest["counts"].get("agreements")
+if agreements is not None and (not isinstance(agreements, int) or agreements < 1):
+    raise SystemExit(f"agreement count {agreements!r} is invalid")
+print(digest, agreements if agreements is not None else count)
 PY
 ) || fail "incoming dataset validation failed"
 
@@ -65,6 +86,7 @@ raise SystemExit(0 if actual == sys.argv[2] else 1)
 PY
 then
   printf 'Atlas already serves Forge dataset %s; no publication needed.\n' "$expected_sha"
+  cleanup_incoming
   exit 0
 fi
 
@@ -104,9 +126,10 @@ if ! sudo -n systemctl restart "$service_name"; then
   fail "could not restart $service_name; restored the previous release"
 fi
 if ! curl --fail --silent --show-error --max-time 30 http://127.0.0.1:8000/health \
-  | python3 -c "import json,sys; health=json.load(sys.stdin); sys.exit(0 if health.get('status') == 'ok' and health.get('recordCount') == $expected_count else 1)"; then
+  | python3 -c "import json,sys; health=json.load(sys.stdin); sys.exit(0 if health.get('status') == 'ok' and health.get('recordCount') == $expected_records else 1)"; then
   rollback
   fail "health check failed; restored the previous release"
 fi
 
-printf 'Published Atlas Forge dataset %s (%s records).\n' "$expected_sha" "$expected_count"
+cleanup_incoming
+printf 'Published Atlas Forge dataset %s (%s records).\n' "$expected_sha" "$expected_records"

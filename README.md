@@ -159,6 +159,12 @@ release and atomically switches `/srv/maple-atlas/data/current`; identical
 source content is a no-op. A restart or health-check failure restores the
 previous release.
 
+The health check expects the Data API's `recordCount` to equal the
+manifest's `agreements` count (latest amendments), or `accepted` for older
+manifests. Each run's upload directory under
+`/srv/maple-atlas/data/incoming` is removed after a publication or no-op;
+failed uploads are kept for investigation and should be cleaned up by hand.
+
 Before enabling the schedule, configure the data API service paths as:
 
 ```text
