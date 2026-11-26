@@ -168,37 +168,71 @@ def _read_csv(path: Path) -> pd.DataFrame:
     )
 
 
-def recipient_links(grants_parquet: Path) -> dict[str, str]:
-    """Business number -> recipient_id, for recipients identified by their BN.
+@dataclass(frozen=True)
+class RecipientLinks:
+    """How charities find their grant recipient.
 
-    Forge uses a BN as an organization's identity only when few names share
-    it, and never for individuals, so a charity links to a recipient only when
-    that recipient's identity is the charity's own business number.
+    by_number: recipients whose identity is the charity's business number.
+    by_name: (business number, normalized name) -> recipient, for organizations
+    grouped by name (large organizations publish under many name variants,
+    such as universities with faculties), linked only when the recipient's
+    name equals the charity's legal or operating name.
     """
-    from maple_forge.recipients import _hash  # noqa: PLC0415 - shared rule
+
+    by_number: dict[str, str]
+    by_name: dict[tuple[str, str], str]
+
+
+def recipient_links(grants_parquet: Path) -> RecipientLinks:
+    from maple_forge.recipients import _hash, normalize_name  # noqa: PLC0415 - shared rules
 
     table = pq.read_table(
         grants_parquet,
-        columns=["recipient_id", "business_number", "recipient_is_person", "recipient_is_aggregate"],
+        columns=[
+            "recipient_id",
+            "recipient_name",
+            "business_number",
+            "recipient_is_person",
+            "recipient_is_aggregate",
+        ],
     ).to_pandas()
     table = table[
         table["business_number"].notna()
         & ~table["recipient_is_person"].astype(bool)
         & ~table["recipient_is_aggregate"].astype(bool)
-    ].drop_duplicates(["recipient_id", "business_number"])
-    links: dict[str, str] = {}
-    for recipient_id, business_number in zip(
-        table["recipient_id"], table["business_number"], strict=True
+    ].drop_duplicates(["recipient_id", "business_number", "recipient_name"])
+    by_number: dict[str, str] = {}
+    by_name: dict[tuple[str, str], str] = {}
+    for recipient_id, name, business_number in zip(
+        table["recipient_id"], table["recipient_name"], table["business_number"], strict=True
     ):
-        if recipient_id == _hash("recipient", f"org:bn:{business_number}"):
-            links[str(business_number)] = str(recipient_id)
-    return links
+        number = str(business_number)
+        if recipient_id == _hash("recipient", f"org:bn:{number}"):
+            by_number[number] = str(recipient_id)
+            continue
+        key = normalize_name(name)
+        if key:
+            by_name.setdefault((number, key), str(recipient_id))
+    return RecipientLinks(by_number=by_number, by_name=by_name)
+
+
+def _link(row: pd.Series, links: RecipientLinks) -> str | None:
+    from maple_forge.recipients import normalize_name  # noqa: PLC0415
+
+    number = row["business_number"]
+    if number in links.by_number:
+        return links.by_number[number]
+    for name in (row["legal_name"], row["account_name"]):
+        key = normalize_name(name) if isinstance(name, str) else None
+        if key and (number, key) in links.by_name:
+            return links.by_name[(number, key)]
+    return None
 
 
 def clean_charities(
     identification: pd.DataFrame,
     financial: pd.DataFrame,
-    links: dict[str, str],
+    links: RecipientLinks,
     *,
     list_year: str = CHARITIES_YEAR,
 ) -> pd.DataFrame:
@@ -241,7 +275,7 @@ def clean_charities(
     charities["revenue_government_total"] = by_level.sum(axis=1, min_count=1).where(
         by_level.notna().any(axis=1), charities["revenue_government_reported"]
     )
-    charities["recipient_id"] = charities["business_number"].map(links)
+    charities["recipient_id"] = charities.apply(lambda row: _link(row, links), axis=1)
     charities["list_year"] = list_year
     return charities.loc[:, PARQUET_SCHEMA.names]
 

@@ -27,23 +27,34 @@ def _grants(tmp_path: Path) -> Path:
     rows = [
         # Organization identified by its own BN: links.
         {"recipient_id": _hash("recipient", "org:bn:108161779"), "business_number": "108161779",
-         "recipient_is_person": False, "recipient_is_aggregate": False},
+         "recipient_name": "University of Example", "recipient_is_person": False,
+         "recipient_is_aggregate": False},
         # A researcher filed under the university's BN: must not link.
         {"recipient_id": "recipient_person", "business_number": "108161779",
-         "recipient_is_person": True, "recipient_is_aggregate": False},
-        # An organization grouped by name although it has a BN: must not link.
+         "recipient_name": "Doe, Jane", "recipient_is_person": True, "recipient_is_aggregate": False},
+        # An organization grouped by name whose name differs from the charity's:
+        # must not link.
         {"recipient_id": "recipient_by_name", "business_number": "222222223",
+         "recipient_name": "Community Centre Kitchen Project",
          "recipient_is_person": False, "recipient_is_aggregate": False},
+        # A foundation grouped by name whose name equals the charity's: links.
+        {"recipient_id": "recipient_foundation", "business_number": "333333334",
+         "recipient_name": "Family Foundation", "recipient_is_person": False,
+         "recipient_is_aggregate": False},
     ]
     path = tmp_path / "grants.parquet"
     pq.write_table(pa.Table.from_pylist(rows), path)
     return path
 
 
-def test_links_only_recipients_identified_by_their_own_business_number(tmp_path: Path) -> None:
+def test_links_by_business_number_identity_or_matching_name(tmp_path: Path) -> None:
     links = recipient_links(_grants(tmp_path))
 
-    assert links == {"108161779": _hash("recipient", "org:bn:108161779")}
+    assert links.by_number == {"108161779": _hash("recipient", "org:bn:108161779")}
+    assert links.by_name == {
+        ("222222223", "community centre kitchen project"): "recipient_by_name",
+        ("333333334", "family foundation"): "recipient_foundation",
+    }
 
 
 def test_clean_charities_maps_codes_amounts_and_latest_return(tmp_path: Path) -> None:
@@ -71,6 +82,7 @@ def test_clean_charities_maps_codes_amounts_and_latest_return(tmp_path: Path) ->
     assert pd.isna(small["recipient_id"])
 
     foundation = charities.loc["333333334"]
+    assert foundation["recipient_id"] == "recipient_foundation"  # name match
     assert foundation["designation"] == "Private foundation"
     assert foundation["charitable_programs"] == 0
     assert pd.isna(foundation["revenue_government_total"])
@@ -89,9 +101,9 @@ def test_build_charities_writes_parquet_and_manifest(tmp_path: Path) -> None:
 
     table = pq.read_table(summary.output_path)
     assert summary.charity_count == 3
-    assert summary.linked_count == 1
+    assert summary.linked_count == 2
     assert table.schema.field("fiscal_period_end").type == pa.date32()
     assert not list((tmp_path / "out").glob("*.part"))
     manifest = summary.manifest_path.read_text(encoding="utf-8")
-    assert '"linked_recipients": 1' in manifest
+    assert '"linked_recipients": 2' in manifest
     assert "Open Government Licence" in manifest

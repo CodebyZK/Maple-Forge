@@ -90,7 +90,7 @@ def download_grants(
     session = _build_retry_session() if http_get is None else None
     request = session.get if session is not None else http_get
 
-    LOGGER.info("Downloading grants CSV from %s", resolved_url)
+    LOGGER.info("Downloading %s from %s", destination.name, resolved_url)
     try:
         with request(
             resolved_url,
