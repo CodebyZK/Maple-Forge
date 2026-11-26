@@ -56,3 +56,6 @@ data/processed/*
 data/samples/*
 !data/samples/.gitkeep
 !data/samples/grants.sample.json
+
+# Downloaded CRA charity files.
+data/charities/
